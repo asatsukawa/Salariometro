@@ -1,0 +1,119 @@
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Color, PatternFill
+from openpyxl.formatting.rule import ColorScaleRule
+import numpy as np
+
+nome = input("Digite o mês: ")
+numero = input("Digite o número do mês:")
+ano = input("Digite o ano: ")
+planilha_original = '/content/drive/My Drive/Salariometro/Analise Divergencia/Analises/'+nome+' '+ano+'.xlsx'
+df_original = pd.read_excel(planilha_original)
+df_original.drop_duplicates(inplace=True)
+# Ler o arquivo Excel para trabalhar com os dados
+df = pd.read_excel(planilha_original, index_col=0)
+df.drop_duplicates(inplace=True)
+
+df = df.reset_index()
+df = df.drop('Vazio', axis=1)
+
+df['DATA'] = pd.to_datetime(df['DATA'], format='%d/%m/%Y %H:%M:%S', errors='coerce').dt.strftime('%d/%m/%Y')
+df['dataCriacao'] = pd.to_datetime(df['dataCriacao'], format='%d/%m/%Y %H:%M:%S', errors='coerce').dt.strftime('%d/%m/%Y')
+
+tempo = pd.DataFrame({
+    'Nome_Usuario': df['Nome_Usuario'],
+    'DATA': df['DATA'],
+    'Tempo_tabulação': (pd.to_datetime(df['dataCriacao'], format='%d/%m/%Y') - pd.to_datetime(df['DATA'], format='%d/%m/%Y')).dt.days
+})
+
+tabela_tempo = pd.pivot_table(tempo, values='Tempo_tabulação', index='DATA', columns='Nome_Usuario', aggfunc='mean')
+
+
+def subtract_min(row):
+    min_val = min([val for val in row if not pd.isnull(val)])
+    return [val - min_val if not pd.isnull(val) else np.nan for val in row]
+
+tabela_tempo = tabela_tempo.apply(subtract_min, axis=1, result_type='broadcast')
+
+tabela_tempo.loc['Média'] = tabela_tempo.mean()
+
+
+caminho_arquivo2 = '/content/drive/My Drive/Salariometro/Analise Divergencia/Analises/Resultados/Resultado_'+ano+'_'+numero+'_'+nome+'.xlsx'
+
+tabela_tempo.to_excel(caminho_arquivo2, sheet_name='Tempo')
+
+df = df.iloc[:, :-1]
+
+divergencia = pd.DataFrame()
+
+
+for i, df2 in df.groupby(df.index // 3):
+    df0, df1, df2 = df2.iloc[0], df2.iloc[1], df2.iloc[2]
+
+    for col in df2.index[9:]:
+        if not pd.isna(df2[col]):
+          if df0[col] != df2[col]:
+                divergencia = pd.concat([divergencia, pd.DataFrame({'Index da Coluna': [col], 'Nome_Usuario': [df0['Nome_Usuario']], 'nregistro': [df0['nregistro']],'Data':[df0['pacote']]})])
+
+          if df1[col] != df2[col]:
+                divergencia = pd.concat([divergencia, pd.DataFrame({'Index da Coluna': [col], 'Nome_Usuario': [df1['Nome_Usuario']], 'nregistro': [df1['nregistro']],'Data':[df1['pacote']]})])
+
+
+
+with pd.ExcelWriter(caminho_arquivo2, engine='openpyxl', mode='a') as writer:
+    divergencia.to_excel(writer, sheet_name='Resultado_Divergencia', index=False, header=True)
+
+
+novo_dataframe2 = divergencia.pivot_table(index='Data', columns='Nome_Usuario', aggfunc='size', fill_value=0)
+novo_dataframe2.loc['Total'] = novo_dataframe2.sum()
+novo_dataframe2['Total'] = novo_dataframe2.sum(axis=1)
+
+
+with pd.ExcelWriter(caminho_arquivo2, engine='openpyxl', mode='a') as writer:
+    novo_dataframe2.to_excel(writer, sheet_name='Divergencia_Individual', index=True, header=True)
+
+novo_dataframe = divergencia.pivot_table(index='Index da Coluna', columns='Nome_Usuario', aggfunc='size', fill_value=0)
+novo_dataframe.loc['Total divergencia individual'] = novo_dataframe.sum()
+contagem_nome_usuario = df_original['Nome_Usuario'].value_counts()
+novo_dataframe.loc['Quantidade Tabulação'] = contagem_nome_usuario
+novo_dataframe['Total'] = novo_dataframe.sum(axis=1)
+novo_dataframe.loc['Divergencia/Instrumento']= novo_dataframe.loc['Total divergencia individual']/novo_dataframe.loc['Quantidade Tabulação']
+
+
+with pd.ExcelWriter(caminho_arquivo2, engine='openpyxl', mode='a') as writer:
+    novo_dataframe.to_excel(writer, sheet_name='Tabela_Divergencia', index=True, header=True)
+
+book = load_workbook(caminho_arquivo2)
+sheet = book['Tabela_Divergencia']
+
+
+maximos = novo_dataframe.iloc[:-2].max()
+minimos = novo_dataframe.iloc[:-2].min()
+
+
+cor_inicio = 'cce0ff'  # Azul claro
+cor_fim = '5187dd'  # Azul escuro
+
+
+for col, coluna in enumerate(sheet.iter_cols(min_row=2, max_row=sheet.max_row - 3, min_col=2, max_col=min(sheet.max_column, len(maximos)))):
+    valor_max = maximos[novo_dataframe.columns[col]]
+    valor_min = minimos[novo_dataframe.columns[col]]
+
+    rule = ColorScaleRule(
+        start_type='min',
+        start_color=Color(rgb=cor_inicio),
+        end_type='max',
+        end_color=Color(rgb=cor_fim)
+    )
+    sheet.conditional_formatting.add(f'{coluna[0].column_letter}2:{coluna[0].column_letter}{sheet.max_row - 3}', rule)
+
+
+book.save(caminho_arquivo2)
+
+contagem_divergencias = divergencia.groupby('Data').size().reset_index(name='Quantidade_Divergencias')
+contagem_tabulacao = df.groupby('pacote')['nregistro'].nunique().reset_index(name='Quantidade_Tabulação')
+
+with pd.ExcelWriter(caminho_arquivo2, engine='openpyxl', mode='a') as writer:
+    contagem_divergencias.to_excel(writer, sheet_name='Resultado_Test_Data', index=False, header=True)
+with pd.ExcelWriter(caminho_arquivo2, engine='openpyxl', mode='a') as writer:
+    contagem_tabulacao.to_excel(writer, sheet_name='Quantidade_Tabulacao', index=False, header=True)
